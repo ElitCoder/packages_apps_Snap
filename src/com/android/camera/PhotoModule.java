@@ -26,6 +26,8 @@ import android.content.Intent;
 import android.content.SharedPreferences.Editor;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Matrix;
 import android.graphics.Rect;
 import android.hardware.Camera.CameraInfo;
 import android.hardware.Camera.Parameters;
@@ -50,6 +52,7 @@ import android.os.Message;
 import android.os.MessageQueue;
 import android.os.SystemClock;
 import android.provider.MediaStore;
+import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.OrientationEventListener;
@@ -89,6 +92,7 @@ import android.text.InputType;
 import com.android.internal.util.MemInfoReader;
 import android.app.ActivityManager;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -1200,6 +1204,38 @@ public class PhotoModule
             }
         }
     }
+    
+    private byte[] flipJpeg(byte[] jpegData, int orientation, int jpegOrientation) {
+        Bitmap srcBitmap = BitmapFactory.decodeByteArray(jpegData, 0, jpegData.length);
+        Matrix m = new Matrix();
+        if(orientation == 270 || orientation == 90) {
+            // Judge whether the picture or phone is horizontal screen
+            if (jpegOrientation == 0 || jpegOrientation == 180) {
+                m.preScale(-1, 1);
+            } else { // the picture or phone is Vertical screen
+                m.preScale(1, -1);
+            }
+        }
+        Bitmap dstBitmap = Bitmap.createBitmap(srcBitmap, 0, 0, srcBitmap.getWidth(), srcBitmap.getHeight(), m, false);
+        dstBitmap.setDensity(DisplayMetrics.DENSITY_DEFAULT);
+        int size = dstBitmap.getWidth() * dstBitmap.getHeight();
+        ByteArrayOutputStream outStream = new ByteArrayOutputStream(size);
+        dstBitmap.compress(Bitmap.CompressFormat.JPEG, 100, outStream);
+
+        return outStream.toByteArray();
+    }
+
+    public static byte[] addExifTags(byte[] jpeg, int orientationInDegree) {
+        ExifInterface exif = new ExifInterface();
+        exif.addOrientationTag(orientationInDegree);
+        ByteArrayOutputStream jpegOut = new ByteArrayOutputStream();
+        try {
+            exif.writeExif(jpeg, jpegOut);
+        } catch (IOException e) {
+            Log.e(TAG, "Could not write EXIF", e);
+        }
+        return jpegOut.toByteArray();
+    }
 
     private final class JpegPictureCallback
             implements CameraPictureCallback {
@@ -1210,7 +1246,7 @@ public class PhotoModule
         }
 
         @Override
-        public void onPictureTaken(final byte [] jpegData, CameraProxy camera) {
+        public void onPictureTaken(byte [] jpegData, CameraProxy camera) {
             Log.d(TAG, "JpegPictureCallback: onPictureTaken()");
             if (mCameraState != LONGSHOT) {
                 mHandler.post(new Runnable() {
@@ -1348,6 +1384,19 @@ public class PhotoModule
             if (!mRefocus || (mRefocus && mReceivedSnapNum == 7)) {
                 ExifInterface exif = Exif.getExif(jpegData);
                 final int orientation = Exif.getOrientation(exif);
+                
+                if(mCameraId == CameraHolder.instance().getFrontCameraId()) {
+                    IconListPreference selfieMirrorPref = (IconListPreference) mPreferenceGroup
+                            .findPreference(CameraSettings.KEY_SELFIE_MIRROR);
+                    if (selfieMirrorPref != null && selfieMirrorPref.getValue() != null &&
+                            selfieMirrorPref.getValue().equalsIgnoreCase("enable")) {
+                        jpegData = flipJpeg(jpegData, info.orientation, orientation);
+                        jpegData = addExifTags(jpegData, orientation);
+                    }
+                }
+				
+                final byte [] testFinalJpeg = jpegData;
+                
                 if (!mIsImageCaptureIntent) {
                     // Burst snapshot. Generate new image name.
                     if (mReceivedSnapNum > 1) {
@@ -1431,7 +1480,7 @@ public class PhotoModule
                                         mUI.setDownFactor(4);
                                     }
                                     if (mAnimateCapture) {
-                                        mUI.animateCapture(jpegData, orientation, mMirror);
+                                        mUI.animateCapture(testFinalJpeg, orientation, mMirror);
                                     }
                                 }
                             });
@@ -1455,7 +1504,7 @@ public class PhotoModule
                             mHandler.post(new Runnable() {
                                 @Override
                                 public void run() {
-                                    mUI.showCapturedImageForReview(jpegData, orientation, mMirror);
+                                    mUI.showCapturedImageForReview(testFinalJpeg, orientation, mMirror);
                                 }
                             });
                         } else {
@@ -3432,7 +3481,8 @@ public class PhotoModule
 
         mLongShotMaxSnap = SystemProperties.getInt(PERSIST_LONGSHOT_MAX_SNAP, -1);
         mParameters.set("max-longshot-snap",mLongShotMaxSnap);
-
+        
+        /*
         // Set selfie mirror
         String selfieMirror = mPreferences.getString(
                 CameraSettings.KEY_SELFIE_MIRROR,
@@ -3441,6 +3491,7 @@ public class PhotoModule
             mParameters.set("snapshot-picture-flip", "flip-h");
         else
             mParameters.set("snapshot-picture-flip", "off");
+        */
     }
 
     private int estimateJpegFileSize(final Size size, final String quality) {
